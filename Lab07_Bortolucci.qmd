@@ -1,0 +1,139 @@
+---
+title: "Lab07"
+author: "Mateus Bortolucci"
+format: typst
+editor: visual
+---
+```{r}
+library(DBI)
+library(RSQLite)
+
+# ==========================================================
+# 1. Conectar ao banco de dados
+# ==========================================================
+# Ajuste o caminho para onde você salvou o arquivo baixado
+conn <- dbConnect(RSQLite::SQLite(), "database.sqlite3")
+
+# ==========================================================
+# 2. Explorar o esquema do banco
+# ==========================================================
+tabelas <- dbListTables(conn)
+tabelas
+
+# Colunas de cada tabela (rode e confira contra o diagrama do enunciado)
+for (tb in tabelas) {
+  cat("\n---", tb, "---\n")
+  print(dbListFields(conn, tb))
+}
+
+# ==========================================================
+# 2. Professores que lecionaram disciplinas de Estatística
+# ==========================================================
+# subjects.abbreviation = 'STAT' identifica o assunto
+# subject_memberships liga subjects a course_offerings
+# sections liga course_offerings às seções (turmas)
+# teachings liga seções a instrutores
+# instructors traz o nome do professor
+
+query_professores_stat <- "
+SELECT DISTINCT i.id, i.name
+FROM instructors AS i
+INNER JOIN teachings AS t          ON t.instructor_id = i.id
+INNER JOIN sections AS s           ON s.uuid = t.section_uuid
+INNER JOIN course_offerings AS co  ON co.uuid = s.course_offering_uuid
+INNER JOIN subject_memberships AS sm ON sm.course_offering_uuid = co.uuid
+INNER JOIN subjects AS sub         ON sub.code = sm.subject_code
+WHERE sub.abbreviation = 'STAT';
+"
+
+professores_stat <- dbGetQuery(conn, query_professores_stat)
+professores_stat                 # quem são
+nrow(professores_stat)           # quantos são
+
+# ==========================================================
+# 3. Nota média ponderada (GPA) por oferecimento
+# ==========================================================
+# Escala: A=4, AB=3.5, B=3, BC=2.5, C=2, D=1, F=0
+# grade_distributions guarda as contagens de alunos em cada conceito,
+# por course_offering_uuid + section_number (+ section_type)
+
+query_gpa <- "
+SELECT
+    i.id                AS instructor_id,
+    i.name              AS instructor_name,
+    c.number            AS course_number,
+    c.name              AS course_name,
+    co.uuid             AS course_offering_uuid,
+    gd.a_count, gd.ab_count, gd.b_count, gd.bc_count,
+    gd.c_count, gd.d_count, gd.f_count
+FROM grade_distributions AS gd
+INNER JOIN course_offerings AS co    ON co.uuid = gd.course_offering_uuid
+INNER JOIN courses AS c              ON c.uuid = co.course_uuid
+INNER JOIN subject_memberships AS sm ON sm.course_offering_uuid = co.uuid
+INNER JOIN subjects AS sub           ON sub.code = sm.subject_code
+INNER JOIN sections AS s             ON s.course_offering_uuid = co.uuid
+                                      AND s.number = gd.section_number
+INNER JOIN teachings AS t            ON t.section_uuid = s.uuid
+INNER JOIN instructors AS i          ON i.id = t.instructor_id
+WHERE sub.abbreviation = 'STAT';
+"
+
+notas <- dbGetQuery(conn, query_gpa)
+
+# Força conversão para numérico (evita erro de tipo character)
+cols_contagem <- c("a_count", "ab_count", "b_count", "bc_count",
+                    "c_count", "d_count", "f_count")
+notas[cols_contagem] <- lapply(notas[cols_contagem], as.numeric)
+
+head(notas)
+# Quantidade de alunos e soma de pontos (numerador da média ponderada)
+notas$n_alunos <- with(notas, a_count + ab_count + b_count + bc_count +
+                                 c_count + d_count + f_count)
+
+notas$soma_pontos <- with(notas, a_count * 4   + ab_count * 3.5 +
+                                    b_count * 3   + bc_count * 2.5 +
+                                    c_count * 2   + d_count * 1   +
+                                    f_count * 0)
+
+notas <- subset(notas, n_alunos > 0)  # remove linhas sem alunos avaliados
+notas$gpa_oferecimento <- notas$soma_pontos / notas$n_alunos
+
+# ==========================================================
+# a/b. Professor mais difícil / mais fácil
+# ==========================================================
+# Agrega por professor, ponderando pelo número de alunos em cada turma
+por_professor <- aggregate(cbind(soma_pontos, n_alunos) ~ instructor_id + instructor_name,
+                            data = notas, FUN = sum)
+por_professor$gpa_medio <- por_professor$soma_pontos / por_professor$n_alunos
+
+# GPA menor = disciplina/professor mais difícil; GPA maior = mais fácil
+professor_mais_dificil <- por_professor[which.min(por_professor$gpa_medio), ]
+professor_mais_facil   <- por_professor[which.max(por_professor$gpa_medio), ]
+
+professor_mais_dificil
+professor_mais_facil
+
+# ==========================================================
+# c/d. Disciplina mais difícil / mais fácil
+# ==========================================================
+por_disciplina <- aggregate(cbind(soma_pontos, n_alunos) ~ course_number + course_name,
+                             data = notas, FUN = sum)
+por_disciplina$gpa_medio <- por_disciplina$soma_pontos / por_disciplina$n_alunos
+
+disciplina_mais_dificil <- por_disciplina[which.min(por_disciplina$gpa_medio), ]
+disciplina_mais_facil   <- por_disciplina[which.max(por_disciplina$gpa_medio), ]
+
+disciplina_mais_dificil
+disciplina_mais_facil
+
+# ==========================================================
+# 4. Desconectar do banco de dados
+# ==========================================================
+dbDisconnect(conn)
+```
+
+```{r}
+Sys.setenv(TZ = "America/Sao_Paulo")
+Sys.time()
+```
+
