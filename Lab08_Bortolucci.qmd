@@ -1,0 +1,83 @@
+---
+title: "Lab08"
+author: "Mateus Bortolucci"
+format: typst
+engine: knitr
+---
+
+```{r}
+library(reticulate)
+py_require(c("polars", "gdown"))
+repl_python()
+```
+
+```{python}
+
+import gzip, shutil
+
+for nome in ["title.basics0", "title.ratings", "title.principals0"]:
+    with gzip.open(f"{nome}.tsv.gz", "rb") as f_in, open(f"{nome}.tsv", "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+
+import polars as pl
+
+OPC = dict(separator="\t", null_values=["\\N"], quote_char=None, infer_schema=False)
+
+basics = (
+    pl.scan_csv("title.basics0.tsv", **OPC)
+    .filter(pl.col("titleType") == "movie")
+    .select("tconst", "primaryTitle", "genres")
+)
+
+ratings = (
+    pl.scan_csv("title.ratings.tsv", **OPC)
+    .select(
+        "tconst",
+        pl.col("averageRating").cast(pl.Float64),
+        pl.col("numVotes").cast(pl.Int64),
+    )
+)
+
+principals = (
+    pl.scan_csv("title.principals0.tsv", **OPC)
+    .select("tconst", "nconst", "category")
+)
+
+# Resultado pequeno: pode ficar em memória
+filmes = basics.join(ratings, on="tconst", how="inner").collect(engine="streaming")
+
+# Q1
+q1 = (
+    filmes.sort(["averageRating", "numVotes", "primaryTitle"],
+                descending=[True, True, False])
+    .head(5)
+)
+
+# Q2
+q2 = (
+    filmes.filter(pl.col("averageRating") > 8)
+    .drop_nulls("genres")
+    .with_columns(pl.col("genres").str.split(","))
+    .explode("genres")
+    .group_by("genres")
+    .agg(pl.len().alias("n_filmes"))
+    .sort(["n_filmes", "genres"], descending=[True, False])
+)
+
+
+# Q3
+bons_filmes = filmes.filter(pl.col("averageRating") > 7.5).select("tconst").lazy()
+
+q3 = (
+    principals
+    .filter(pl.col("category").is_in(["actor", "actress"]))
+    .join(bons_filmes, on="tconst", how="inner")
+    .select("nconst", "tconst").unique()
+    .group_by("nconst")
+    .agg(pl.len().alias("n_filmes"))
+    .sort(["n_filmes", "nconst"], descending=[True, False])
+    .head(3)
+    .collect(engine="streaming")
+)
+```
+
